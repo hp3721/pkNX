@@ -62,7 +62,7 @@ namespace pkNX.WinForms
             var resultPath = Path.Combine(dir, folder);
             Directory.CreateDirectory(resultPath);
 
-            gfp.Dump(resultPath, handler);
+            gfp.Dump(dir, folder, handler);
 
             return new FileRipperResult(RipResultCode.Success) {ResultPath = resultPath};
         }

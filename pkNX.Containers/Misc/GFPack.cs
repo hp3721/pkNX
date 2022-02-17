@@ -110,16 +110,7 @@ namespace pkNX.Containers
             return -1;
         }
 
-        public int GetIndexFileName(string name)
-        {
-            foreach (var f in HashInFolder)
-            {
-                int index = f.GetIndexFileName(name);
-                if (index >= 0)
-                    return f.Files[index].Index;
-            }
-            return -1;
-        }
+        public int GetIndexFileName(string name) => GetIndexFileName(FnvHash.HashFnv1a_64(name));
 
         public byte[] GetDataFileName(string name)
         {
@@ -129,7 +120,7 @@ namespace pkNX.Containers
 
         public byte[] GetDataFull(ulong hash) => DecompressedFiles[GetIndexFull(hash)];
 
-        public byte[] GetDataFullPath(string path) => GetDataFull(FnvHash.HashFnv1a_64(path));
+        public byte[] GetDataFullPath(string path) => GetDataFull(AddPathToMap(path));
 
         public void SetDataFileName(string name, byte[] data)
         {
@@ -279,26 +270,94 @@ namespace pkNX.Containers
         public Task SetFile(int file, byte[] value, int subFile = 0) => Task.FromResult(this[file] = value);
         public Task SaveAs(string path, ContainerHandler handler, CancellationToken token) => new(() => FileMitm.WriteAllBytes(path, Write()), token);
 
-        public void Dump(string path, ContainerHandler handler)
+        public void Dump(string path, ContainerHandler handler) => Dump(path, string.Empty, handler);
+
+        public void Dump(string parentDir, string folder, ContainerHandler handler)
         {
+            var path = Path.Combine(parentDir, folder);
+
             handler.Initialize(FileTable.Length);
             string format = this.GetFileFormatString();
 
             foreach (var grp in HashInFolder)
             {
-                var dirName = grp.Folder.HashFnv1aPathFolderName;
+                var dirName = grp.Folder.HashFnv1aPathFolderName.ToString("X16");
+
+                var hasTrueDir = GetPathMap().TryGetValue(grp.Folder.HashFnv1aPathFolderName, out var trueDirName);
+                if (hasTrueDir)
+                    dirName = trueDirName;
+
                 foreach (var f in grp.Files)
                 {
                     var index = f.Index;
                     var name = f.HashFnv1aPathFileName;
 
                     var fn = $"{index.ToString(format)} {name:X16}.bin";
+                    if (GetPathMap().TryGetValue(name, out var trueFn))
+                        fn = trueFn;
+
                     var data = DecompressedFiles[f.Index];
 
-                    var subfolder = HashInFolder.Length == 1 ? fn : Path.Combine(dirName.ToString("X16"), fn);
-                    var loc = Path.Combine(path, subfolder);
-                    FileMitm.WriteAllBytes(loc, data);
+                    var subfolder = (!hasTrueDir && HashInFolder.Length == 1) ? fn : Path.Combine(dirName, fn);
+
+                    if (hasTrueDir)
+                        FileMitm.WriteAllBytes(Path.Combine(parentDir, subfolder), data);
+                    else
+                        FileMitm.WriteAllBytes(Path.Combine(parentDir, folder, subfolder), data);
                 }
+            }
+        }
+
+        // lazy init
+        private static IDictionary<ulong, string>? _externalPathMap;
+        private static IDictionary<ulong, string> GetPathMap() => _externalPathMap ??= LoadExternalPathMap();
+
+        private static IDictionary<ulong, string> LoadExternalPathMap()
+        {
+            var res = new Dictionary<ulong, string>();
+
+            // Should this be configurable as in PKHeX?
+            if (File.Exists("GFPAK_Paths.txt"))
+            {
+                foreach (var line in File.ReadAllLines("GFPAK_Paths.txt"))
+                    AddPathToDic(res, line);
+            }
+
+            return res;
+        }
+
+        public static ulong AddPathToMap(string path) => AddPathToDic(GetPathMap(), path);
+
+        private static ulong AddPathToDic(IDictionary<ulong, string> dic, string path)
+        {
+            var dirIdx = path.LastIndexOf('/');
+            if (dirIdx == -1)
+                throw new ArgumentException("Invalid path!");
+
+            var dir = path.Substring(0, dirIdx + 1);
+            var fn = path.Substring(dirIdx + 1);
+
+            var dirHash = FnvHash.HashFnv1a_64(dir);
+            var fnHash = FnvHash.HashFnv1a_64(fn);
+            var fullHash = FnvHash.HashFnv1a_64(fn, dirHash);
+
+            AddHashToDic(dic, dirHash, dir);
+            AddHashToDic(dic, fnHash, fn);
+            AddHashToDic(dic, fullHash, path);
+
+            return fullHash;
+        }
+
+        private static void AddHashToDic(IDictionary<ulong, string> dic, ulong hash, string path)
+        {
+            if (dic.ContainsKey(hash))
+            {
+                if (dic[hash] != path)
+                    throw new ArgumentException($"Inconsistent hash result! {path} != {dic[hash]}");
+            }
+            else
+            {
+                dic[hash] = path;
             }
         }
     }
